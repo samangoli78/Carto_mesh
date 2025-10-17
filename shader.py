@@ -93,7 +93,7 @@ fragment_shader= """
 
         // --- Black borders at bin edges
         float binPos   = fract(tb);
-        float borderFrac = 0.005;          // ~2% of a bin
+        float borderFrac = 0.0005;          // ~2% of a bin
         float px       = fwidth(tb);      // resolution-aware thickness
         float edgeDist = min(binPos, 1.0 - binPos);
 

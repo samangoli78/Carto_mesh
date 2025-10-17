@@ -1,0 +1,6 @@
+Eng==0.1.2
+engine==0.6.0
+matplotlib==3.10.7
+moderngl==5.12.0
+numpy==1.13.0
+scipy==1.16.2
