@@ -33,7 +33,7 @@ def make_lut_texture(ctx, cmap_name="viridis", n_colors=8):
     tex.repeat_y = False
     return tex
 
-
+from smooth import *
 # ------------- Main -------------
 if __name__ == "__main__":
     carto = Carto()
@@ -42,6 +42,9 @@ if __name__ == "__main__":
 
     # choose scalar
     s = LAT
+    target_radius = 20  # e.g., mm — tune to your mesh scale
+
+    s_smooth = heat_kernel_smooth_scalar(verts, faces, s, radius=target_radius, nsteps=1)
 
 
     verts = np.asarray(verts, dtype=np.float32).reshape(-1, 3)
@@ -55,7 +58,7 @@ if __name__ == "__main__":
 
 
     # interleave [pos.xyz, scalar]
-    vertex_data = np.concatenate([verts, s[:, None]], axis=1).astype("f4").tobytes()
+    vertex_data = np.concatenate([verts, s_smooth[:, None]], axis=1).astype("f4").tobytes()
     vbo_format  = "3f 1f"
     attrs       = ("aPosition", "aScalar")
 
@@ -76,8 +79,8 @@ if __name__ == "__main__":
     # scalar controls
     program["uSMin"].value   = float(np.min(s))
     program["uSMax"].value   = float(np.max(s))
-    program["uGamma"].value  = 0.8
-    num_colors = 40 # set discrete bands
+    program["uGamma"].value  = 1
+    num_colors =50 # set discrete bands
     program["uNumColors"].value = int(num_colors)
 
     # LUT: discrete N colors
