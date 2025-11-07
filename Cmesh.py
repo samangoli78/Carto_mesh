@@ -34,6 +34,8 @@ def make_lut_texture(ctx, cmap_name="viridis", n_colors=8):
     return tex
 
 from smooth import *
+
+from smooth_z import *
 # ------------- Main -------------
 if __name__ == "__main__":
     carto = Carto()
@@ -42,12 +44,36 @@ if __name__ == "__main__":
 
     # choose scalar
     s = LAT
-    target_radius = 20  # e.g., mm — tune to your mesh scale
+    target_radius = 2  # e.g., mm — tune to your mesh scale
+    V = np.asarray(verts, np.float64).copy()
+    F = np.asarray(faces, np.int32)
 
-    s_smooth = heat_kernel_smooth_scalar(verts, faces, s, radius=target_radius, nsteps=1)
+    # V: (n,3) float64; F: (m,3) int32
+    Lmean = mean_edge_length(V, F)         # you already have this helper
+    sample_radius  = 5 * Lmean           # geodesic neighborhood for measuring z
+    sample_sigma   = 5 * Lmean   # Gaussian width on the geodesic ball
+    diffuse_radius = 5       # heat-kernel radius for z denoising
+    alpha          = 0.1                   # smaller step; use multiple iterations
+    gamma          = 0.0                   # ignore normals (remove sharp sections)
+    nsteps         = 2
+
+    iters = 5
+    for _ in range(iters):
+        V, z_raw, z_s = curvature_smooth_mesh_normals_geodesic(
+            V, F,
+            sample_radius=sample_radius,
+            sample_sigma=sample_sigma,
+            diffuse_radius=diffuse_radius,
+            alpha=alpha,
+            gamma=gamma,
+            nsteps=nsteps
+        )
 
 
-    verts = np.asarray(verts, dtype=np.float32).reshape(-1, 3)
+    s_smooth = heat_kernel_smooth_scalar(verts, faces, s, radius=target_radius, nsteps=2)
+
+
+    verts = np.asarray(V, dtype=np.float32).reshape(-1, 3)
     faces = np.asarray(faces, dtype=np.int32).reshape(-1, 3)
     s     = np.asarray(s,     dtype=np.float32).reshape(-1)
 
@@ -58,6 +84,8 @@ if __name__ == "__main__":
 
 
     # interleave [pos.xyz, scalar]
+    s_final=s[:, None]-s_smooth[:, None]
+    print(s_final.min(),s_final.max(),s_final.mean(),s_final.std())
     vertex_data = np.concatenate([verts, s_smooth[:, None]], axis=1).astype("f4").tobytes()
     vbo_format  = "3f 1f"
     attrs       = ("aPosition", "aScalar")
