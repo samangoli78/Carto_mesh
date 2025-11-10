@@ -1,7 +1,13 @@
-from CARTO_Tool import Carto
+import os,sys
 import numpy as np
 from scipy.spatial import KDTree
-
+here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [
+    os.path.abspath(os.path.join(here, "..", "Carto_tool")),
+    os.path.abspath(os.path.join(here, "..", "Engine")),
+    os.path.abspath(os.path.join(here))
+]
+from CAR_TOOL.CARTO_Tool import Carto
 class Carto_points:
     def __init__(self,carto:Carto,triple=False):
         self.carto=carto
@@ -35,13 +41,12 @@ class Carto_points:
 
 
 if __name__=="__main__":
-    carto=Carto(r"D:/data_Carto/PERUADE/New_Case_3Extra_01",8)
-    carto.set_cat_value(8)
-    verts,faces,normals,_,_,_=carto.parse_mesh_file()
+    carto=Carto(r"D:/data_Carto/PERUADE/New_Case_3Extra_01")
+    verts, faces, scals1, scals2,LAT = carto.pars_mesh_file_with_electrode()  # verts:(N,3), faces:(M,3)
 
     cp=Carto_points(carto)
     cp.extract_all()
-    print("original_points",cp.points)
+    print("original_points",cp.points[:10])
     projection=cp.get_projection(cp.points,verts)
-    print("projected points",projection)
+    print("projected points",projection[:10])
     

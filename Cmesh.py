@@ -43,13 +43,13 @@ if __name__ == "__main__":
     eng = Engine()
 
     # choose scalar
-    s = LAT
+    s = scals2
     target_radius = 2  # e.g., mm — tune to your mesh scale
     V = np.asarray(verts, np.float64).copy()
     F = np.asarray(faces, np.int32)
 
     # V: (n,3) float64; F: (m,3) int32
-    Lmean = mean_edge_length(V, F)         # you already have this helper
+    """Lmean = mean_edge_length(V, F)         # you already have this helper
     sample_radius  = 5 * Lmean           # geodesic neighborhood for measuring z
     sample_sigma   = 5 * Lmean   # Gaussian width on the geodesic ball
     diffuse_radius = 5       # heat-kernel radius for z denoising
@@ -69,7 +69,7 @@ if __name__ == "__main__":
             nsteps=nsteps
         )
 
-
+    """
     s_smooth = heat_kernel_smooth_scalar(verts, faces, s, radius=target_radius, nsteps=2)
 
 
@@ -108,7 +108,7 @@ if __name__ == "__main__":
     program["uSMin"].value   = float(np.min(s))
     program["uSMax"].value   = float(np.max(s))
     program["uGamma"].value  = 1
-    num_colors =50 # set discrete bands
+    num_colors =10 # set discrete bands
     program["uNumColors"].value = int(num_colors)
 
     # LUT: discrete N colors

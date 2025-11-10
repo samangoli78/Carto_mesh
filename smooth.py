@@ -2,6 +2,46 @@ import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix, diags
 from scipy.sparse.linalg import spsolve, splu
 
+
+def laplace_interpolate_from_sparse(V, F, known_idx, known_val, lam=0.0):
+    """
+    Interpolate scalar from sparse constraints via harmonic extension on a triangle mesh.
+    (L + lam*M) f = 0 on unknowns, with Dirichlet f = known_val on known_idx.
+    """
+    V = np.asarray(V, np.float64); F = np.asarray(F, np.int32)
+    known_idx = np.asarray(known_idx, np.int64)
+    known_val = np.asarray(known_val, np.float64)
+
+    # Build operators using your function
+    L, M = build_cotan_laplacian_and_mass(V, F)
+    A = L + (lam * M if lam > 0 else 0)
+    n = V.shape[0]
+
+    # Deduplicate constraints (mean if multiple map to same vertex)
+    order = np.argsort(known_idx)
+    ki = known_idx[order]; kv = known_val[order]
+    uniq, start = np.unique(ki, return_index=True)
+    sums = np.add.reduceat(kv, start)
+    counts = np.diff(np.append(start, len(kv)))
+    fk = sums / counts
+
+    mask_known = np.zeros(n, dtype=bool)
+    mask_known[uniq] = True
+    uk = uniq
+    uu = np.where(~mask_known)[0]
+
+    # Partition system
+    Auu = A[uu][:, uu]
+    Auk = A[uu][:, uk]
+
+    rhs = -Auk @ fk
+    fu = spsolve(Auu, rhs)
+
+    f = np.zeros(n, dtype=np.float64)
+    f[uk] = fk
+    f[uu] = fu
+    return f
+
 def cotangent(a, b, c):
     # cot at a in triangle (a,b,c)
     u = b - a; v = c - a
