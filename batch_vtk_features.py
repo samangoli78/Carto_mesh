@@ -181,29 +181,94 @@ def write_mesh_multi_scalar_vtp_vtk(verts, faces, scalars_dict, fname):
 
     pd = poly.GetPointData()
     n = V.shape[0]
+    first_set = False
     for name, arr in scalars_dict.items():
-        a = np.asarray(arr, float).ravel()
-        if a.size != n:
-            raise ValueError(f"Scalar '{name}' has length {a.size}, expected {n}")
-        va = vtk.vtkFloatArray()
-        va.SetName(str(name))
-        va.SetNumberOfComponents(1)
-        va.SetNumberOfTuples(n)
-        for i, v in enumerate(a):
-            va.SetValue(i, float(v))  # np.nan passes through
-        pd.AddArray(va)
-        # Make the first array the active scalars for coloring
-        if pd.GetScalars() is None:
-            pd.SetScalars(va)
+        a = np.asarray(arr)
+        if a.ndim == 1:
+            if a.size != n:
+                raise ValueError(f"Scalar '{name}' has length {a.size}, expected {n}")
+            va = vtk.vtkFloatArray()
+            va.SetName(str(name))
+            va.SetNumberOfComponents(1)
+            va.SetNumberOfTuples(n)
+            for i, v in enumerate(a):
+                va.SetValue(i, float(v))
+            pd.AddArray(va)
+            if not first_set:
+                pd.SetScalars(va); first_set = True
+        elif a.ndim == 2 and a.shape[0] == n and a.shape[1] in (2,3):
+            comps = a.shape[1]
+            va = vtk.vtkFloatArray()
+            va.SetName(str(name))
+            va.SetNumberOfComponents(comps)
+            va.SetNumberOfTuples(n)
+            for i in range(n):
+                tup = [float(x) for x in a[i]]
+                if comps == 2: tup = tup + [0.0]
+                va.SetTuple(i, tup[:3])
+            pd.AddArray(va)
+        else:
+            raise ValueError(f"Array '{name}' has shape {a.shape}, expected (N,) or (N,3)")
 
     if not fname.endswith(".vtp"):
         fname = fname.rsplit(".", 1)[0] + ".vtp"
     w = vtk.vtkXMLPolyDataWriter()
     w.SetFileName(fname)
     w.SetInputData(poly)
-    w.SetDataModeToAppended()   # binary blocks; NaNs preserved
+    w.SetDataModeToAppended()
     w.EncodeAppendedDataOff()
     w.Write()
+from differential_ops import (
+    per_face_gradient_scalar, gradient_vertices_from_faces, cv_from_grad,
+    laplacian_scalar_cotan, divergence_cotan, curl_normal, hessian_quadratic_fit,
+    vertex_normals_area_weighted
+)
+def _pick_lat_key(S):
+    # choose which field acts as LAT for derivatives
+    for k in ("First", "SR", "Second", "Third"):
+        if k in S: return k
+    # fallback: any scalar present
+    return next(iter(S.keys()))
+
+def _append_derivatives_to_S(S, V, F, L, M, lat_key=None):
+    if lat_key is None:
+        lat_key = _pick_lat_key(S)
+    t = np.asarray(S[lat_key], float)
+
+    # grad (NaN-aware)
+    gF = per_face_gradient_scalar(V, F, t)
+    gV = gradient_vertices_from_faces(V, F, gF)  # tangent-projected
+
+    # CV
+    slowness, CV_mag, CV_vec = cv_from_grad(gV)
+
+    # Laplacian
+    lap_t = laplacian_scalar_cotan(L, M, t)
+
+    # Divergence & curl of CV vector
+    # project CV_vec to tangent again for safety
+    nrm = vertex_normals_area_weighted(V, F)
+    vdotn = np.sum(CV_vec*nrm, axis=1)
+    CV_vec_t = CV_vec - vdotn[:,None]*nrm
+
+    div_v = divergence_cotan(V, F, CV_vec_t)
+    curln = curl_normal(V, F, CV_vec_t)
+
+    # Hessian (2x2 in tangent frame → store components)
+    H11, H12, H22 = hessian_quadratic_fit(V, F, t, rho_scale=1.5)
+
+    # Add to dict: vectors as (N,3), scalars as (N,)
+    S[f"{lat_key}_grad"]   = gV
+    S[f"{lat_key}_slowness"] = slowness
+    S[f"{lat_key}_CV_mag"] = CV_mag
+    S[f"{lat_key}_CV_vec"] = CV_vec_t
+    S[f"{lat_key}_laplace"] = lap_t
+    S[f"{lat_key}_divCV"]   = div_v
+    S[f"{lat_key}_curlnCV"] = curln
+    S[f"{lat_key}_H11"]     = H11
+    S[f"{lat_key}_H12"]     = H12
+    S[f"{lat_key}_H22"]     = H22
+    return S
 
 
 def _xml_header(): return '<?xml version="1.0"?>\n<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">\n'
@@ -326,7 +391,18 @@ def export_lat_to_vtk(
     # ----- interpolate ALL to mesh -----
     S = _interp_many_nanaware(verts, faces, known_idx, values_point, lam=lam)
     # --- Compare areas for voltages in the band [0.0, 0.5] and save a PNG ---
+    # ---- build L, M once ----
+    V = np.asarray(verts, float); F = np.asarray(faces, int)
+    L, M = build_cotan_laplacian_and_mass(V, F)
 
+    # ---- append derivative fields for a chosen LAT (First/SR/Second/Third) ----
+    try:
+        if "First"  in S: S = _append_derivatives_to_S(S, V, F, L, M, lat_key="First")
+        if "Second" in S: S = _append_derivatives_to_S(S, V, F, L, M, lat_key="Second")
+        if "Third"  in S: S = _append_derivatives_to_S(S, V, F, L, M, lat_key="Third")
+        if "SR"     in S: S = _append_derivatives_to_S(S, V, F, L, M, lat_key="SR")
+    except Exception as e:
+        print("[DERIV]", e)
 
     # choose which voltage fields to compare (only ones present in S will be used)
     voltage_keys = ["SR_Voltage","First_Voltage", "Second_Voltage", "Third_Voltage"]  # edit if needed
@@ -355,18 +431,18 @@ def export_lat_to_vtk(
                 print(f"[AREA] Skipped {key} due to error: {e}")
 
     if areas_5:
-        labels = list(areas_5.keys())
-        vals   = np.array([areas_5[k] for k in labels], dtype=float)
+        labels_ = list(areas_5.keys())
+        vals   = np.array([areas_5[k] for k in labels_], dtype=float)
         total  = float(np.sum(vals))
         perc   = (vals / total * 100.0) if total > 0 else np.zeros_like(vals)
 
         # plot
         fig, ax = plt.subplots(figsize=(6, 3.2))
-        x = np.arange(len(labels))
+        x = np.arange(len(labels_))
         bars = ax.bar(x, vals, align="center")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=0)
+        ax.set_xticklabels(labels_, rotation=0)
         ax.set_ylabel("Area/ mesh Area")
         ax.set_title("Band area comparison: 0.0–0.5")
 
@@ -387,18 +463,18 @@ def export_lat_to_vtk(
         print("[AREA] No matching voltage scalars found in S; nothing plotted.")
 
     if areas_15:
-        labels = list(areas_15.keys())
-        vals   = np.array([areas_15[k] for k in labels], dtype=float)
+        labels_ = list(areas_15.keys())
+        vals   = np.array([areas_15[k] for k in labels_], dtype=float)
         total  = float(np.sum(vals))
         perc   = (vals / total * 100.0) if total > 0 else np.zeros_like(vals)
 
         # plot
         fig, ax = plt.subplots(figsize=(6, 3.2))
-        x = np.arange(len(labels))
+        x = np.arange(len(labels_))
         bars = ax.bar(x, vals, align="center")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=0)
+        ax.set_xticklabels(labels_, rotation=0)
         ax.set_ylabel("Area/mesh Area")
         ax.set_title("Band area comparison: 0.0–1.5")
 
@@ -420,18 +496,18 @@ def export_lat_to_vtk(
     # ---- optional: area histograms with 0.5 bins ----
 
     if integrals:
-        labels = list(integrals.keys())
-        vals   = np.array([integrals[k] for k in labels], dtype=float)/area_total
+        labels_ = list(integrals.keys())
+        vals   = np.array([integrals[k] for k in labels_], dtype=float)/area_total
         total  = float(np.sum(vals))
         perc   = (vals / total * 100.0) if total > 0 else np.zeros_like(vals)
 
         # plot
         fig, ax = plt.subplots(figsize=(6, 3.2))
-        x = np.arange(len(labels))
+        x = np.arange(len(labels_))
         bars = ax.bar(x, vals, align="center")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=0)
+        ax.set_xticklabels(labels_, rotation=0)
         ax.set_ylabel("V(mv)")
         ax.set_title("mean_voltage")
 
@@ -453,14 +529,18 @@ def export_lat_to_vtk(
     # ---- optional: area histograms with 0.5 bins ----
 
     # ----- write mesh (multi scalar) -----
-    mesh_vtk = os.path.join(out_dir, "mesh_multi.vtk")
+    mesh_vtk = os.path.join(out_dir, "mesh_multi.vtp")
     write_mesh_multi_scalar_vtp_vtk(verts, faces, S, mesh_vtk)
 
+
     # ----- write points (numeric + string) -----
+    labels = np.asarray(labels)
+    labels_num=(labels == "POS").astype(np.int8)
     pt_arrays_num = dict(values_point)
     pt_arrays_num["PointNumber"] = pnums
-    pt_arrays_str = {"Label": labels}
-
+    pt_arrays_num.update({"Label": labels_num})
+    pt_arrays_str={}
+    
     pts_vtp = os.path.join(out_dir, "electrodes.vtp")
     _write_points_multi_vtp(pt_coords, pt_arrays_num, pt_arrays_str, pts_vtp)
 
@@ -468,3 +548,4 @@ def export_lat_to_vtk(
     print("  ", mesh_vtk)
     print("  ", pts_vtp)
     return mesh_vtk, pts_vtp
+
